@@ -13,6 +13,7 @@ CODEX_HOME = Path.home() / ".codex"
 INSTALL_DIR = CODEX_HOME / "mac-push"
 SOUNDS_DIR = INSTALL_DIR / "sounds"
 CONFIG_PATH = CODEX_HOME / "config.toml"
+HOOKS_PATH = CODEX_HOME / "hooks.json"
 
 SOURCE_SCRIPT = REPO_ROOT / "codex_mac_push.py"
 TARGET_SCRIPT = INSTALL_DIR / "codex_mac_push.py"
@@ -26,6 +27,20 @@ SOUNDS = {
         "voice": "Rocko",
         "text": "Codex needs approval",
         "filename": "codex_needs_approval.wav",
+    },
+}
+HOOKS = {
+    "PostToolUse": {
+        "matcher": "*",
+        "command": f"/usr/bin/python3 {TARGET_SCRIPT} --event tool-used",
+        "timeout": 5,
+        "statusMessage": "Marking Codex tool use",
+    },
+    "PermissionRequest": {
+        "matcher": "*",
+        "command": f"/usr/bin/python3 {TARGET_SCRIPT} --event approval-requested",
+        "timeout": 5,
+        "statusMessage": "Notifying approval request",
     },
 }
 
@@ -127,14 +142,64 @@ def install_config() -> Path | None:
     return backup_path
 
 
+def hook_group_exists(groups: list[dict], command: str) -> bool:
+    for group in groups:
+        for hook in group.get("hooks", []):
+            if hook.get("command") == command:
+                return True
+    return False
+
+
+def merge_hooks(existing: dict) -> dict:
+    merged = dict(existing)
+    hooks = dict(merged.get("hooks", {}))
+    merged["hooks"] = hooks
+
+    for event, hook_config in HOOKS.items():
+        groups = list(hooks.get(event, []))
+        if not hook_group_exists(groups, hook_config["command"]):
+            groups.append(
+                {
+                    "matcher": hook_config["matcher"],
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": hook_config["command"],
+                            "timeout": hook_config["timeout"],
+                            "statusMessage": hook_config["statusMessage"],
+                        }
+                    ],
+                }
+            )
+        hooks[event] = groups
+
+    return merged
+
+
+def install_hooks() -> Path | None:
+    CODEX_HOME.mkdir(parents=True, exist_ok=True)
+    if not HOOKS_PATH.exists():
+        existing = {}
+        backup_path = None
+    else:
+        backup_path = backup(HOOKS_PATH, "codex-push-backup")
+        existing = json.loads(HOOKS_PATH.read_text())
+
+    HOOKS_PATH.write_text(json.dumps(merge_hooks(existing), indent=2) + "\n")
+    return backup_path
+
+
 def main() -> int:
     install_files()
     install_sounds()
     config_backup = install_config()
+    hooks_backup = install_hooks()
     print(f"installed_script={TARGET_SCRIPT}")
     print(f"installed_sounds={SOUNDS_DIR}")
     if config_backup:
         print(f"config_backup={config_backup}")
+    if hooks_backup:
+        print(f"hooks_backup={hooks_backup}")
     return 0
 
 

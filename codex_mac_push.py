@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import subprocess
 from dataclasses import dataclass
@@ -11,6 +12,7 @@ from typing import Iterable
 
 SUPPRESSED_FRONTMOST_APPS = {"Codex", "Terminal", "iTerm", "iTerm2", "Warp"}
 SOUND_DIR = Path.home() / ".codex" / "mac-push" / "sounds"
+STATE_DIR = Path.home() / ".codex" / "mac-push" / "state"
 EVENT_SOUND_FILES = {
     "agent-turn-complete": "codex_task_complete.wav",
     "approval-requested": "codex_needs_approval.wav",
@@ -52,6 +54,28 @@ def resolve_notification(event: str, cwd: Path) -> Notification:
 
 def sound_path_for_event(event: str) -> Path:
     return SOUND_DIR / EVENT_SOUND_FILES[event]
+
+
+def normalized_cwd(cwd: Path) -> str:
+    return str(cwd.expanduser().resolve(strict=False))
+
+
+def tool_used_marker_path(cwd: Path) -> Path:
+    cwd_hash = hashlib.sha256(normalized_cwd(cwd).encode("utf-8")).hexdigest()[:16]
+    return STATE_DIR / f"tool-used-{cwd_hash}.marker"
+
+
+def mark_tool_used(cwd: Path) -> None:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    tool_used_marker_path(cwd).write_text("1\n")
+
+
+def consume_tool_used_marker(cwd: Path) -> bool:
+    marker_path = tool_used_marker_path(cwd)
+    if not marker_path.exists():
+        return False
+    marker_path.unlink()
+    return True
 
 
 def should_send_notification(frontmost_app: str | None) -> bool:
@@ -123,7 +147,7 @@ def chain_existing_notify(command: Iterable[str]) -> None:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Send status-only Codex notifications on macOS.")
-    parser.add_argument("--event", choices=("agent-turn-complete", "approval-requested"), required=True)
+    parser.add_argument("--event", choices=("agent-turn-complete", "approval-requested", "tool-used"), required=True)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--cwd", default=os.getcwd())
     parser.add_argument("--chain-existing-notify", action="store_true")
@@ -135,14 +159,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    cwd = Path(args.cwd)
 
     if args.chain_existing_notify and args.codex_notify_args:
         chain_existing_notify(EXISTING_NOTIFY + args.codex_notify_args)
 
-    notification = resolve_notification(args.event, Path(args.cwd))
+    if args.event == "tool-used":
+        if not args.dry_run:
+            mark_tool_used(cwd)
+        return 0
+
+    notification = resolve_notification(args.event, cwd)
     if args.dry_run:
         print(notification.title)
         print(notification.body)
+        return 0
+
+    if args.event == "agent-turn-complete" and not consume_tool_used_marker(cwd):
         return 0
 
     if args.event == "approval-requested" and not args.human_approval_confirmed:

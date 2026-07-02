@@ -2,6 +2,7 @@ import importlib.util
 import io
 import subprocess
 import sys
+import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -139,16 +140,67 @@ class CodexMacPushTest(unittest.TestCase):
     def test_sends_notification_and_plays_matching_sound(self):
         module = load_module()
 
-        with (
-            mock.patch.object(module, "frontmost_app_name", return_value="Finder"),
-            mock.patch.object(module, "send_macos_notification") as send,
-            mock.patch.object(module, "play_event_sound") as play_sound,
-        ):
-            exit_code = module.main(["--event", "agent-turn-complete", "--cwd", "/tmp/example-project"])
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with (
+                mock.patch.object(module, "STATE_DIR", Path(tmpdir)),
+                mock.patch.object(module, "frontmost_app_name", return_value="Finder"),
+                mock.patch.object(module, "send_macos_notification") as send,
+                mock.patch.object(module, "play_event_sound") as play_sound,
+            ):
+                module.main(["--event", "tool-used", "--cwd", "/tmp/example-project"])
+                exit_code = module.main(["--event", "agent-turn-complete", "--cwd", "/tmp/example-project"])
 
         self.assertEqual(exit_code, 0)
         send.assert_called_once()
         play_sound.assert_called_once_with("agent-turn-complete")
+
+    def test_turn_complete_is_suppressed_when_no_tool_was_used(self):
+        module = load_module()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with (
+                mock.patch.object(module, "STATE_DIR", Path(tmpdir)),
+                mock.patch.object(module, "frontmost_app_name", return_value="Finder"),
+                mock.patch.object(module, "send_macos_notification") as send,
+                mock.patch.object(module, "play_event_sound") as play_sound,
+            ):
+                exit_code = module.main(["--event", "agent-turn-complete", "--cwd", "/tmp/example-project"])
+
+        self.assertEqual(exit_code, 0)
+        send.assert_not_called()
+        play_sound.assert_not_called()
+
+    def test_tool_used_event_only_marks_state(self):
+        module = load_module()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with (
+                mock.patch.object(module, "STATE_DIR", Path(tmpdir)),
+                mock.patch.object(module, "send_macos_notification") as send,
+                mock.patch.object(module, "play_event_sound") as play_sound,
+            ):
+                exit_code = module.main(["--event", "tool-used", "--cwd", "/tmp/example-project"])
+
+        self.assertEqual(exit_code, 0)
+        send.assert_not_called()
+        play_sound.assert_not_called()
+
+    def test_turn_complete_consumes_tool_used_marker(self):
+        module = load_module()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with (
+                mock.patch.object(module, "STATE_DIR", Path(tmpdir)),
+                mock.patch.object(module, "frontmost_app_name", return_value="Finder"),
+                mock.patch.object(module, "send_macos_notification") as send,
+                mock.patch.object(module, "play_event_sound") as play_sound,
+            ):
+                module.main(["--event", "tool-used", "--cwd", "/tmp/example-project"])
+                module.main(["--event", "agent-turn-complete", "--cwd", "/tmp/example-project"])
+                module.main(["--event", "agent-turn-complete", "--cwd", "/tmp/example-project"])
+
+        self.assertEqual(send.call_count, 1)
+        self.assertEqual(play_sound.call_count, 1)
 
     def test_play_event_sound_uses_afplay_when_file_exists(self):
         module = load_module()

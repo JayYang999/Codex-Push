@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import subprocess
 from datetime import datetime
 from pathlib import Path
 
@@ -15,9 +16,17 @@ CONFIG_PATH = CODEX_HOME / "config.toml"
 
 SOURCE_SCRIPT = REPO_ROOT / "codex_mac_push.py"
 TARGET_SCRIPT = INSTALL_DIR / "codex_mac_push.py"
-SOURCE_SOUNDS = {
-    "codex_task_complete.wav": REPO_ROOT / "sounds" / "codex_task_complete.wav",
-    "codex_needs_approval.wav": REPO_ROOT / "sounds" / "codex_needs_approval.wav",
+SOUNDS = {
+    "agent-turn-complete": {
+        "voice": "Eddy",
+        "text": "Codex task complete",
+        "filename": "codex_task_complete.wav",
+    },
+    "approval-requested": {
+        "voice": "Rocko",
+        "text": "Codex needs approval",
+        "filename": "codex_needs_approval.wav",
+    },
 }
 
 
@@ -93,8 +102,18 @@ def install_files() -> None:
     SOUNDS_DIR.mkdir(parents=True, exist_ok=True)
     shutil.copy2(SOURCE_SCRIPT, TARGET_SCRIPT)
     TARGET_SCRIPT.chmod(0o755)
-    for name, source in SOURCE_SOUNDS.items():
-        shutil.copy2(source, SOUNDS_DIR / name)
+
+
+def generate_sound(voice: str, text: str, output_path: Path) -> None:
+    temp_aiff = output_path.with_suffix(".aiff")
+    subprocess.run(["/usr/bin/say", "-v", voice, "-o", str(temp_aiff), text], check=True)
+    subprocess.run(["/usr/bin/afconvert", "-f", "WAVE", "-d", "LEI16", str(temp_aiff), str(output_path)], check=True)
+    temp_aiff.unlink(missing_ok=True)
+
+
+def install_sounds() -> None:
+    for sound in SOUNDS.values():
+        generate_sound(sound["voice"], sound["text"], SOUNDS_DIR / sound["filename"])
 
 
 def install_config() -> Path | None:
@@ -110,6 +129,7 @@ def install_config() -> Path | None:
 
 def main() -> int:
     install_files()
+    install_sounds()
     config_backup = install_config()
     print(f"installed_script={TARGET_SCRIPT}")
     print(f"installed_sounds={SOUNDS_DIR}")

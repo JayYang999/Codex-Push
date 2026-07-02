@@ -202,6 +202,106 @@ class CodexMacPushTest(unittest.TestCase):
         self.assertEqual(send.call_count, 1)
         self.assertEqual(play_sound.call_count, 1)
 
+    def test_turn_complete_consumes_recent_marker_when_notify_cwd_differs(self):
+        module = load_module()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with (
+                mock.patch.object(module, "STATE_DIR", Path(tmpdir)),
+                mock.patch.object(module, "frontmost_app_name", return_value="Finder"),
+                mock.patch.object(module, "send_macos_notification") as send,
+                mock.patch.object(module, "play_event_sound") as play_sound,
+            ):
+                module.main(["--event", "tool-used", "--cwd", "/tmp/example-project"])
+                exit_code = module.main(["--event", "agent-turn-complete", "--cwd", "/"])
+
+        self.assertEqual(exit_code, 0)
+        send.assert_called_once()
+        notification = send.call_args.args[0]
+        self.assertEqual(notification.title, "Codex task complete")
+        self.assertEqual(notification.body, "Project: example-project")
+        play_sound.assert_called_once_with("agent-turn-complete")
+
+    def test_turn_complete_ignores_stale_fallback_markers(self):
+        module = load_module()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            marker = Path(tmpdir) / "tool-used-old.marker"
+            marker.write_text("/tmp/example-project\n")
+            with (
+                mock.patch.object(module, "STATE_DIR", Path(tmpdir)),
+                mock.patch.object(module, "marker_age_seconds", return_value=module.TOOL_USED_MARKER_MAX_AGE_SECONDS + 1),
+                mock.patch.object(module, "frontmost_app_name", return_value="Finder"),
+                mock.patch.object(module, "send_macos_notification") as send,
+                mock.patch.object(module, "play_event_sound") as play_sound,
+            ):
+                exit_code = module.main(["--event", "agent-turn-complete", "--cwd", "/"])
+
+        self.assertEqual(exit_code, 0)
+        send.assert_not_called()
+        play_sound.assert_not_called()
+
+    def test_turn_complete_ignores_legacy_fallback_markers_without_cwd(self):
+        module = load_module()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            marker = Path(tmpdir) / "tool-used-legacy.marker"
+            marker.write_text("1\n")
+            with (
+                mock.patch.object(module, "STATE_DIR", Path(tmpdir)),
+                mock.patch.object(module, "frontmost_app_name", return_value="Finder"),
+                mock.patch.object(module, "send_macos_notification") as send,
+                mock.patch.object(module, "play_event_sound") as play_sound,
+            ):
+                exit_code = module.main(["--event", "agent-turn-complete", "--cwd", "/"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertFalse(marker.exists())
+        send.assert_not_called()
+        play_sound.assert_not_called()
+
+    def test_turn_complete_ignores_legacy_exact_marker_without_cwd(self):
+        module = load_module()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.object(module, "STATE_DIR", Path(tmpdir)):
+                marker = module.tool_used_marker_path(Path("/tmp/example-project"))
+            marker.write_text("1\n")
+            with (
+                mock.patch.object(module, "STATE_DIR", Path(tmpdir)),
+                mock.patch.object(module, "frontmost_app_name", return_value="Finder"),
+                mock.patch.object(module, "send_macos_notification") as send,
+                mock.patch.object(module, "play_event_sound") as play_sound,
+            ):
+                exit_code = module.main(["--event", "agent-turn-complete", "--cwd", "/tmp/example-project"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertFalse(marker.exists())
+        send.assert_not_called()
+        play_sound.assert_not_called()
+
+    def test_turn_complete_skips_legacy_fallback_marker_and_consumes_valid_marker(self):
+        module = load_module()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            legacy_marker = Path(tmpdir) / "tool-used-legacy.marker"
+            valid_marker = Path(tmpdir) / "tool-used-valid.marker"
+            legacy_marker.write_text("1\n")
+            valid_marker.write_text("/tmp/example-project\n")
+            with (
+                mock.patch.object(module, "STATE_DIR", Path(tmpdir)),
+                mock.patch.object(module, "frontmost_app_name", return_value="Finder"),
+                mock.patch.object(module, "send_macos_notification") as send,
+                mock.patch.object(module, "play_event_sound"),
+            ):
+                exit_code = module.main(["--event", "agent-turn-complete", "--cwd", "/"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertFalse(legacy_marker.exists())
+        self.assertFalse(valid_marker.exists())
+        notification = send.call_args.args[0]
+        self.assertEqual(notification.body, "Project: example-project")
+
     def test_play_event_sound_uses_afplay_when_file_exists(self):
         module = load_module()
         fake_sound = Path("/tmp/codex_needs_approval.wav")

@@ -5,6 +5,7 @@ import argparse
 import hashlib
 import os
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -13,6 +14,7 @@ from typing import Iterable
 SUPPRESSED_FRONTMOST_APPS = {"Codex", "Terminal", "iTerm", "iTerm2", "Warp"}
 SOUND_DIR = Path.home() / ".codex" / "mac-push" / "sounds"
 STATE_DIR = Path.home() / ".codex" / "mac-push" / "state"
+TOOL_USED_MARKER_MAX_AGE_SECONDS = 30 * 60
 EVENT_SOUND_FILES = {
     "agent-turn-complete": "codex_task_complete.wav",
     "approval-requested": "codex_needs_approval.wav",
@@ -67,15 +69,55 @@ def tool_used_marker_path(cwd: Path) -> Path:
 
 def mark_tool_used(cwd: Path) -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
-    tool_used_marker_path(cwd).write_text("1\n")
+    tool_used_marker_path(cwd).write_text(normalized_cwd(cwd) + "\n")
 
 
-def consume_tool_used_marker(cwd: Path) -> bool:
-    marker_path = tool_used_marker_path(cwd)
+def marker_age_seconds(marker_path: Path) -> float:
+    return time.time() - marker_path.stat().st_mtime
+
+
+def cwd_from_marker(marker_path: Path, fallback: Path, allow_fallback: bool) -> Path | None:
+    try:
+        marker_cwd = marker_path.read_text().strip()
+    except OSError:
+        return fallback if allow_fallback else None
+    if not marker_cwd or marker_cwd == "1":
+        return fallback if allow_fallback else None
+    return Path(marker_cwd)
+
+
+def consume_marker(marker_path: Path, fallback: Path, allow_fallback: bool) -> Path | None:
     if not marker_path.exists():
-        return False
+        return None
+    cwd = cwd_from_marker(marker_path, fallback, allow_fallback)
     marker_path.unlink()
-    return True
+    return cwd
+
+
+def recent_tool_used_markers() -> list[Path]:
+    try:
+        marker_paths = list(STATE_DIR.glob("tool-used-*.marker"))
+    except OSError:
+        return []
+    recent_markers = [
+        marker_path
+        for marker_path in marker_paths
+        if marker_age_seconds(marker_path) <= TOOL_USED_MARKER_MAX_AGE_SECONDS
+    ]
+    return sorted(recent_markers, key=lambda marker_path: marker_path.stat().st_mtime, reverse=True)
+
+
+def consume_tool_used_marker(cwd: Path) -> Path | None:
+    exact_marker_path = tool_used_marker_path(cwd)
+    exact_marker_cwd = consume_marker(exact_marker_path, cwd, allow_fallback=False)
+    if exact_marker_cwd is not None:
+        return exact_marker_cwd
+
+    for fallback_marker_path in recent_tool_used_markers():
+        fallback_marker_cwd = consume_marker(fallback_marker_path, cwd, allow_fallback=False)
+        if fallback_marker_cwd is not None:
+            return fallback_marker_cwd
+    return None
 
 
 def should_send_notification(frontmost_app: str | None) -> bool:
@@ -169,18 +211,23 @@ def main(argv: list[str] | None = None) -> int:
             mark_tool_used(cwd)
         return 0
 
-    notification = resolve_notification(args.event, cwd)
     if args.dry_run:
+        notification = resolve_notification(args.event, cwd)
         print(notification.title)
         print(notification.body)
         return 0
 
-    if args.event == "agent-turn-complete" and not consume_tool_used_marker(cwd):
-        return 0
+    notification_cwd = cwd
+    if args.event == "agent-turn-complete":
+        consumed_marker_cwd = consume_tool_used_marker(cwd)
+        if consumed_marker_cwd is None:
+            return 0
+        notification_cwd = consumed_marker_cwd
 
     if args.event == "approval-requested" and not args.human_approval_confirmed:
         return 0
 
+    notification = resolve_notification(args.event, notification_cwd)
     if should_send_notification(frontmost_app_name()):
         send_macos_notification(notification)
         play_event_sound(args.event)

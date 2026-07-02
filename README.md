@@ -8,9 +8,9 @@ Local macOS notifications and voice cues for Codex.
 - Plays a short local voice cue for completed tool-using turns.
 - Keeps notification text privacy-safe: it only shows the event and project label.
 - Avoids false `needs approval` alerts when Codex is using automatic approval review.
-- Generates local WAV sounds during install with macOS `say` voices:
-  - `Eddy`: `Codex task complete`
-  - `Rocko`: `Codex needs approval`
+- Generates local MP3 sounds during install with Edge TTS:
+  - `en-US-GuyNeural`: `Codex task complete.`
+  - `en-US-GuyNeural`, `rate=-5%`, `pitch=+8Hz`: `Codex needs your approval.`
 
 ## Current Approval Behavior
 
@@ -21,10 +21,11 @@ That means this project prefers no false approval alerts over noisy approval ale
 ## Install
 
 ```bash
+pipx install edge-tts
 python3 install.py
 ```
 
-The installer writes to `~/.codex/mac-push/`, backs up `~/.codex/config.toml` and `~/.codex/hooks.json`, generates the two WAV files, updates the top-level `notify` setting, and adds a `PostToolUse` hook that marks real tool activity.
+The installer writes to `~/.codex/mac-push/`, backs up `~/.codex/config.toml` and `~/.codex/hooks.json`, generates the two MP3 files, updates the top-level `notify` setting, and adds a `PostToolUse` hook that marks real tool activity.
 
 After installing or updating hooks, run `/hooks` in Codex and trust the new hook if Codex marks it for review.
 
@@ -44,6 +45,6 @@ python3 codex_mac_push.py --event approval-requested --dry-run --cwd /tmp/exampl
 To test a real sound locally:
 
 ```bash
-/usr/bin/afplay ~/.codex/mac-push/sounds/codex_task_complete.wav
-/usr/bin/afplay ~/.codex/mac-push/sounds/codex_needs_approval.wav
+/usr/bin/afplay ~/.codex/mac-push/sounds/codex_task_complete.mp3
+/usr/bin/afplay ~/.codex/mac-push/sounds/codex_needs_approval.mp3
 ```

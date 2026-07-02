@@ -16,8 +16,8 @@ SOUND_DIR = Path.home() / ".codex" / "mac-push" / "sounds"
 STATE_DIR = Path.home() / ".codex" / "mac-push" / "state"
 TOOL_USED_MARKER_MAX_AGE_SECONDS = 30 * 60
 EVENT_SOUND_FILES = {
-    "agent-turn-complete": "codex_task_complete.wav",
-    "approval-requested": "codex_needs_approval.wav",
+    "agent-turn-complete": "codex_task_complete.mp3",
+    "approval-requested": "codex_needs_approval.mp3",
 }
 EXISTING_NOTIFY = [
     str(

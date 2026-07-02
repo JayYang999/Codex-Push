@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 from datetime import datetime
@@ -19,14 +20,18 @@ SOURCE_SCRIPT = REPO_ROOT / "codex_mac_push.py"
 TARGET_SCRIPT = INSTALL_DIR / "codex_mac_push.py"
 SOUNDS = {
     "agent-turn-complete": {
-        "voice": "Eddy",
-        "text": "Codex task complete",
-        "filename": "codex_task_complete.wav",
+        "engine": "edge-tts",
+        "voice": "en-US-GuyNeural",
+        "text": "Codex task complete.",
+        "filename": "codex_task_complete.mp3",
     },
     "approval-requested": {
-        "voice": "Rocko",
-        "text": "Codex needs approval",
-        "filename": "codex_needs_approval.wav",
+        "engine": "edge-tts",
+        "voice": "en-US-GuyNeural",
+        "text": "Codex needs your approval.",
+        "rate": "-5%",
+        "pitch": "+8Hz",
+        "filename": "codex_needs_approval.mp3",
     },
 }
 HOOKS = {
@@ -119,16 +124,45 @@ def install_files() -> None:
     TARGET_SCRIPT.chmod(0o755)
 
 
-def generate_sound(voice: str, text: str, output_path: Path) -> None:
-    temp_aiff = output_path.with_suffix(".aiff")
-    subprocess.run(["/usr/bin/say", "-v", voice, "-o", str(temp_aiff), text], check=True)
-    subprocess.run(["/usr/bin/afconvert", "-f", "WAVE", "-d", "LEI16", str(temp_aiff), str(output_path)], check=True)
-    temp_aiff.unlink(missing_ok=True)
+def edge_tts_command() -> str:
+    env_command = os.environ.get("EDGE_TTS_BIN")
+    if env_command:
+        return env_command
+
+    command = shutil.which("edge-tts")
+    if command:
+        return command
+
+    raise RuntimeError("edge-tts is required. Install it with: pipx install edge-tts")
+
+
+def edge_tts_args(sound: dict, output_path: Path) -> list[str]:
+    if sound["engine"] != "edge-tts":
+        raise ValueError(f"Unsupported sound engine: {sound['engine']}")
+
+    args = [
+        edge_tts_command(),
+        "--voice",
+        sound["voice"],
+        "--text",
+        sound["text"],
+        "--write-media",
+        str(output_path),
+    ]
+    if "rate" in sound:
+        args.append(f"--rate={sound['rate']}")
+    if "pitch" in sound:
+        args.append(f"--pitch={sound['pitch']}")
+    return args
+
+
+def generate_sound(sound: dict, output_path: Path) -> None:
+    subprocess.run(edge_tts_args(sound, output_path), check=True)
 
 
 def install_sounds() -> None:
     for sound in SOUNDS.values():
-        generate_sound(sound["voice"], sound["text"], SOUNDS_DIR / sound["filename"])
+        generate_sound(sound, SOUNDS_DIR / sound["filename"])
 
 
 def install_config() -> Path | None:

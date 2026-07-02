@@ -50,8 +50,8 @@ class CodexMacPushTest(unittest.TestCase):
         complete_sound = module.sound_path_for_event("agent-turn-complete")
         approval_sound = module.sound_path_for_event("approval-requested")
 
-        self.assertEqual(complete_sound.name, "codex_task_complete.wav")
-        self.assertEqual(approval_sound.name, "codex_needs_approval.wav")
+        self.assertEqual(complete_sound.name, "codex_task_complete.mp3")
+        self.assertEqual(approval_sound.name, "codex_needs_approval.mp3")
         self.assertNotEqual(complete_sound, approval_sound)
 
     def test_approval_notification_is_suppressed_when_human_approval_is_not_confirmed(self):

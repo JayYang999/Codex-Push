@@ -16,23 +16,47 @@ def load_module():
 
 
 class InstallSoundMappingTest(unittest.TestCase):
-    def test_agent_turn_complete_generates_eddy_task_complete_sound(self):
+    def test_agent_turn_complete_generates_guy_task_complete_sound(self):
         module = load_module()
 
         sound = module.SOUNDS["agent-turn-complete"]
 
-        self.assertEqual(sound["voice"], "Eddy")
-        self.assertEqual(sound["text"], "Codex task complete")
-        self.assertEqual(sound["filename"], "codex_task_complete.wav")
+        self.assertEqual(sound["engine"], "edge-tts")
+        self.assertEqual(sound["voice"], "en-US-GuyNeural")
+        self.assertEqual(sound["text"], "Codex task complete.")
+        self.assertEqual(sound["filename"], "codex_task_complete.mp3")
 
-    def test_approval_requested_generates_rocko_needs_approval_sound(self):
+    def test_approval_requested_generates_guy_needs_approval_sound(self):
         module = load_module()
 
         sound = module.SOUNDS["approval-requested"]
 
-        self.assertEqual(sound["voice"], "Rocko")
-        self.assertEqual(sound["text"], "Codex needs approval")
-        self.assertEqual(sound["filename"], "codex_needs_approval.wav")
+        self.assertEqual(sound["engine"], "edge-tts")
+        self.assertEqual(sound["voice"], "en-US-GuyNeural")
+        self.assertEqual(sound["text"], "Codex needs your approval.")
+        self.assertEqual(sound["rate"], "-5%")
+        self.assertEqual(sound["pitch"], "+8Hz")
+        self.assertEqual(sound["filename"], "codex_needs_approval.mp3")
+
+    def test_edge_tts_command_prefers_env_override(self):
+        module = load_module()
+
+        with unittest.mock.patch.dict("os.environ", {"EDGE_TTS_BIN": "/tmp/edge-tts"}):
+            self.assertEqual(module.edge_tts_command(), "/tmp/edge-tts")
+
+    def test_edge_tts_args_use_equals_for_signed_rate_and_pitch(self):
+        module = load_module()
+
+        with unittest.mock.patch.dict("os.environ", {"EDGE_TTS_BIN": "/tmp/edge-tts"}):
+            args = module.edge_tts_args(
+                module.SOUNDS["approval-requested"],
+                Path("/tmp/codex_needs_approval.mp3"),
+            )
+
+        self.assertIn("--rate=-5%", args)
+        self.assertIn("--pitch=+8Hz", args)
+        self.assertNotIn("--rate", args)
+        self.assertNotIn("--pitch", args)
 
     def test_hooks_include_tool_used_marker_and_approval_notifier(self):
         module = load_module()

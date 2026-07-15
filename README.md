@@ -4,8 +4,10 @@ Local macOS notifications and voice cues for Codex.
 
 ## What It Does
 
-- Sends a macOS notification when a Codex turn completes after using a tool.
-- Plays a short local voice cue for completed tool-using turns.
+- Sends a macOS notification when a tool-using Codex turn delivers a result.
+- Suppresses completion alerts when the final message asks for confirmation,
+  a choice, missing information, or another user response.
+- Plays a short local voice cue only for turns classified as complete.
 - Keeps notification text privacy-safe: it only shows the event and project label.
 - Avoids false `needs approval` alerts when Codex is using automatic approval review.
 - Generates local MP3 sounds during install with Edge TTS:
@@ -17,6 +19,19 @@ Local macOS notifications and voice cues for Codex.
 Codex `PermissionRequest` hooks fire when an approval request is created, including requests that may be routed to automatic review. Because the hook payload does not currently expose a reliable "waiting for human approval" signal, `approval-requested` is silent unless called with `--human-approval-confirmed`.
 
 That means this project prefers no false approval alerts over noisy approval alerts.
+
+## Completion Behavior
+
+Codex invokes external notify commands when a turn ends, including turns that
+pause for clarification. This notifier parses the existing
+`last-assistant-message` field locally and suppresses messages that are waiting
+for user input. The classifier uses only Python string matching: it makes no
+model or network call and consumes no additional tokens.
+
+A completion notification requires both a tool-use marker for the same Codex
+turn and a valid notify payload. Markers are keyed by session and turn so
+concurrent tasks cannot consume each other's state. Missing or malformed
+payloads are suppressed to avoid false completion alerts.
 
 ## Install
 

@@ -36,13 +36,15 @@ avoiding missed alerts.
 
 1. Codex invokes the configured notify command with one JSON payload argument.
 2. The script chains the pre-existing notifier with the original payload.
-3. For `agent-turn-complete`, the script parses `last-assistant-message`.
-4. The script consumes the tool-use marker for that turn/project.
+3. The `PostToolUse` hook stores a marker keyed by `session_id` and `turn_id`.
+4. For `agent-turn-complete`, the script parses `last-assistant-message` and
+   consumes only the marker matching `thread-id` and `turn-id`.
 5. It sends the notification only when a marker exists and the message does not
    require user input.
 
-Consuming the marker even for suppressed clarification turns prevents that
-marker from leaking into a later turn.
+Consuming the matching marker even for suppressed clarification turns prevents
+that marker from leaking into a later turn. The notifier never falls back to a
+different turn's marker when turn identifiers are available.
 
 ## Failure Behavior
 

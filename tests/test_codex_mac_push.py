@@ -1,5 +1,6 @@
 import importlib.util
 import io
+import json
 import subprocess
 import sys
 import tempfile
@@ -10,6 +11,49 @@ from unittest import mock
 
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "codex_mac_push.py"
+
+
+def notify_payload(
+    message: str,
+    thread_id: str = "thread-test",
+    turn_id: str = "turn-test",
+    cwd: str = "/tmp/example-project",
+) -> str:
+    return json.dumps(
+        {
+            "type": "agent-turn-complete",
+            "thread-id": thread_id,
+            "turn-id": turn_id,
+            "cwd": cwd,
+            "last-assistant-message": message,
+        },
+        ensure_ascii=False,
+    )
+
+
+def post_tool_hook_payload(
+    session_id: str = "thread-test",
+    turn_id: str = "turn-test",
+    cwd: str = "/tmp/example-project",
+) -> str:
+    return json.dumps(
+        {
+            "session_id": session_id,
+            "turn_id": turn_id,
+            "cwd": cwd,
+            "hook_event_name": "PostToolUse",
+        }
+    )
+
+
+def mark_tool_used_for_turn(
+    module,
+    session_id: str = "thread-test",
+    turn_id: str = "turn-test",
+    cwd: str = "/tmp/example-project",
+) -> int:
+    with mock.patch("sys.stdin", io.StringIO(post_tool_hook_payload(session_id, turn_id, cwd))):
+        return module.main(["--event", "tool-used", "--cwd", cwd])
 
 
 def load_module():
@@ -147,10 +191,151 @@ class CodexMacPushTest(unittest.TestCase):
                 mock.patch.object(module, "send_macos_notification") as send,
                 mock.patch.object(module, "play_event_sound") as play_sound,
             ):
-                module.main(["--event", "tool-used", "--cwd", "/tmp/example-project"])
-                exit_code = module.main(["--event", "agent-turn-complete", "--cwd", "/tmp/example-project"])
+                mark_tool_used_for_turn(module)
+                exit_code = module.main([
+                    "--event",
+                    "agent-turn-complete",
+                    "--cwd",
+                    "/tmp/example-project",
+                    notify_payload("Implemented the fix and all 34 tests pass."),
+                ])
 
         self.assertEqual(exit_code, 0)
+        send.assert_called_once()
+        play_sound.assert_called_once_with("agent-turn-complete")
+
+    def test_turn_complete_suppresses_real_clarification_messages(self):
+        module = load_module()
+        clarification_messages = (
+            """先确认最关键的一点：这个“热门榜单”首要优化目标是什么？
+
+A. 发现“正在爆”的内容
+B. 找“综合消费最好”的内容
+C. 两者兼顾
+
+我倾向 C，但需要你确认，因为它会直接决定热度分权重和更新频率。""",
+            """这张图说明需要为不同榜单设置不同目标和权重，而不是共用一个热度分。
+
+下一个关键问题：榜单实际排序和展示的对象是什么？
+
+A. 单条视频
+B. 标签/话题
+C. 两级榜单
+
+我建议选 C。""",
+        )
+
+        for message in clarification_messages:
+            with self.subTest(message=message), tempfile.TemporaryDirectory() as tmpdir:
+                with (
+                    mock.patch.object(module, "STATE_DIR", Path(tmpdir)),
+                    mock.patch.object(module, "frontmost_app_name", return_value="Finder"),
+                    mock.patch.object(module, "send_macos_notification") as send,
+                    mock.patch.object(module, "play_event_sound") as play_sound,
+                ):
+                    mark_tool_used_for_turn(module)
+                    marker = module.turn_used_marker_path("thread-test", "turn-test")
+                    exit_code = module.main([
+                        "--event",
+                        "agent-turn-complete",
+                        "--cwd",
+                        "/tmp/example-project",
+                        notify_payload(message),
+                    ])
+
+                self.assertEqual(exit_code, 0)
+                self.assertFalse(marker.exists())
+                send.assert_not_called()
+                play_sound.assert_not_called()
+
+    def test_turn_complete_suppresses_missing_or_malformed_notify_payload(self):
+        module = load_module()
+
+        for extra_args in ([], ["not-json"]):
+            with self.subTest(extra_args=extra_args), tempfile.TemporaryDirectory() as tmpdir:
+                with (
+                    mock.patch.object(module, "STATE_DIR", Path(tmpdir)),
+                    mock.patch.object(module, "frontmost_app_name", return_value="Finder"),
+                    mock.patch.object(module, "send_macos_notification") as send,
+                    mock.patch.object(module, "play_event_sound") as play_sound,
+                ):
+                    module.main(["--event", "tool-used", "--cwd", "/tmp/example-project"])
+                    marker = module.tool_used_marker_path(Path("/tmp/example-project"))
+                    exit_code = module.main([
+                        "--event",
+                        "agent-turn-complete",
+                        "--cwd",
+                        "/tmp/example-project",
+                        *extra_args,
+                    ])
+
+                self.assertEqual(exit_code, 0)
+                self.assertFalse(marker.exists())
+                send.assert_not_called()
+                play_sound.assert_not_called()
+
+    def test_user_input_classifier_handles_question_endings_and_explicit_requests(self):
+        module = load_module()
+
+        for message in (
+            "Which option should I use?",
+            "请提供目标目录。",
+            "I need your input before I continue.",
+        ):
+            with self.subTest(message=message):
+                self.assertTrue(module.message_requires_user_input(message))
+
+        self.assertFalse(module.message_requires_user_input("Implemented the fix and all tests pass."))
+
+    def test_user_input_classifier_detects_question_before_recommendation(self):
+        module = load_module()
+
+        message = "你想用 A 还是 B？\n我建议 A。"
+
+        self.assertTrue(module.message_requires_user_input(message))
+
+    def test_user_input_classifier_allows_optional_follow_up_after_completion(self):
+        module = load_module()
+
+        message = "Implemented the fix and all tests pass. Let me know if you want a follow-up."
+
+        self.assertFalse(module.message_requires_user_input(message))
+
+    def test_turn_complete_only_consumes_marker_for_matching_turn(self):
+        module = load_module()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with (
+                mock.patch.object(module, "STATE_DIR", Path(tmpdir)),
+                mock.patch.object(module, "frontmost_app_name", return_value="Finder"),
+                mock.patch.object(module, "send_macos_notification") as send,
+                mock.patch.object(module, "play_event_sound") as play_sound,
+            ):
+                mark_tool_used_for_turn(module, "thread-a", "turn-a")
+
+            with (
+                mock.patch.object(module, "STATE_DIR", Path(tmpdir)),
+                mock.patch.object(module, "frontmost_app_name", return_value="Finder"),
+                mock.patch.object(module, "send_macos_notification") as send,
+                mock.patch.object(module, "play_event_sound") as play_sound,
+            ):
+                module.main([
+                    "--event",
+                    "agent-turn-complete",
+                    "--cwd",
+                    "/tmp/example-project",
+                    notify_payload("Other turn completed.", "thread-b", "turn-b"),
+                ])
+                send.assert_not_called()
+                play_sound.assert_not_called()
+                module.main([
+                    "--event",
+                    "agent-turn-complete",
+                    "--cwd",
+                    "/tmp/example-project",
+                    notify_payload("Matching turn completed.", "thread-a", "turn-a"),
+                ])
+
         send.assert_called_once()
         play_sound.assert_called_once_with("agent-turn-complete")
 
@@ -195,14 +380,20 @@ class CodexMacPushTest(unittest.TestCase):
                 mock.patch.object(module, "send_macos_notification") as send,
                 mock.patch.object(module, "play_event_sound") as play_sound,
             ):
-                module.main(["--event", "tool-used", "--cwd", "/tmp/example-project"])
-                module.main(["--event", "agent-turn-complete", "--cwd", "/tmp/example-project"])
+                mark_tool_used_for_turn(module)
+                module.main([
+                    "--event",
+                    "agent-turn-complete",
+                    "--cwd",
+                    "/tmp/example-project",
+                    notify_payload("Implemented the fix and all tests pass."),
+                ])
                 module.main(["--event", "agent-turn-complete", "--cwd", "/tmp/example-project"])
 
         self.assertEqual(send.call_count, 1)
         self.assertEqual(play_sound.call_count, 1)
 
-    def test_turn_complete_consumes_recent_marker_when_notify_cwd_differs(self):
+    def test_turn_complete_uses_matching_turn_marker_when_notify_cwd_differs(self):
         module = load_module()
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -212,8 +403,14 @@ class CodexMacPushTest(unittest.TestCase):
                 mock.patch.object(module, "send_macos_notification") as send,
                 mock.patch.object(module, "play_event_sound") as play_sound,
             ):
-                module.main(["--event", "tool-used", "--cwd", "/tmp/example-project"])
-                exit_code = module.main(["--event", "agent-turn-complete", "--cwd", "/"])
+                mark_tool_used_for_turn(module)
+                exit_code = module.main([
+                    "--event",
+                    "agent-turn-complete",
+                    "--cwd",
+                    "/",
+                    notify_payload("Implemented the fix and all tests pass."),
+                ])
 
         self.assertEqual(exit_code, 0)
         send.assert_called_once()
@@ -294,7 +491,16 @@ class CodexMacPushTest(unittest.TestCase):
                 mock.patch.object(module, "send_macos_notification") as send,
                 mock.patch.object(module, "play_event_sound"),
             ):
-                exit_code = module.main(["--event", "agent-turn-complete", "--cwd", "/"])
+                exit_code = module.main([
+                    "--event",
+                    "agent-turn-complete",
+                    "--cwd",
+                    "/",
+                    json.dumps({
+                        "type": "agent-turn-complete",
+                        "last-assistant-message": "Implemented the fix and all tests pass.",
+                    }),
+                ])
 
         self.assertEqual(exit_code, 0)
         self.assertFalse(legacy_marker.exists())

@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, TextIO
 
 
 SUPPRESSED_FRONTMOST_APPS = {"Codex", "Terminal", "iTerm", "iTerm2", "Warp"}
@@ -34,6 +36,26 @@ EXISTING_NOTIFY = [
     ),
     "turn-ended",
 ]
+USER_INPUT_PHRASES = (
+    "需要你确认",
+    "需要您确认",
+    "请确认",
+    "请选择",
+    "请提供",
+    "请回复",
+    "下一个关键问题",
+    "下一点需要确认",
+    "需要澄清",
+    "等待你的回复",
+    "please confirm",
+    "please choose",
+    "please provide",
+    "please reply",
+    "which option",
+    "need your input",
+    "waiting for your reply",
+    "before i continue",
+)
 
 
 @dataclass(frozen=True)
@@ -67,9 +89,19 @@ def tool_used_marker_path(cwd: Path) -> Path:
     return STATE_DIR / f"tool-used-{cwd_hash}.marker"
 
 
-def mark_tool_used(cwd: Path) -> None:
+def turn_used_marker_path(session_id: str, turn_id: str) -> Path:
+    marker_hash = hashlib.sha256(f"{session_id}\0{turn_id}".encode("utf-8")).hexdigest()[:16]
+    return STATE_DIR / f"turn-used-{marker_hash}.marker"
+
+
+def mark_tool_used(cwd: Path, session_id: str | None = None, turn_id: str | None = None) -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
-    tool_used_marker_path(cwd).write_text(normalized_cwd(cwd) + "\n")
+    marker_path = (
+        turn_used_marker_path(session_id, turn_id)
+        if session_id and turn_id
+        else tool_used_marker_path(cwd)
+    )
+    marker_path.write_text(normalized_cwd(cwd) + "\n")
 
 
 def marker_age_seconds(marker_path: Path) -> float:
@@ -118,6 +150,48 @@ def consume_tool_used_marker(cwd: Path) -> Path | None:
         if fallback_marker_cwd is not None:
             return fallback_marker_cwd
     return None
+
+
+def consume_turn_used_marker(session_id: str, turn_id: str) -> Path | None:
+    return consume_marker(turn_used_marker_path(session_id, turn_id), Path.cwd(), allow_fallback=False)
+
+
+def read_hook_payload(stream: TextIO) -> dict | None:
+    try:
+        if stream.isatty():
+            return None
+        raw_payload = stream.read()
+        payload = json.loads(raw_payload)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def codex_notify_payload(notify_args: Iterable[str]) -> dict | None:
+    for argument in notify_args:
+        try:
+            payload = json.loads(argument)
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if isinstance(payload, dict) and payload.get("type") == "agent-turn-complete":
+            return payload
+    return None
+
+
+def last_assistant_message(payload: dict | None) -> str | None:
+    if payload is None:
+        return None
+    message = payload.get("last-assistant-message")
+    if isinstance(message, str) and message.strip():
+        return message.strip()
+    return None
+
+
+def message_requires_user_input(message: str) -> bool:
+    normalized = " ".join(message.split()).casefold()
+    if "?" in normalized or "？" in normalized:
+        return True
+    return any(phrase in normalized for phrase in USER_INPUT_PHRASES)
 
 
 def should_send_notification(frontmost_app: str | None) -> bool:
@@ -199,7 +273,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return args
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, stdin: TextIO | None = None) -> int:
     args = parse_args(argv)
     cwd = Path(args.cwd)
 
@@ -208,7 +282,21 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.event == "tool-used":
         if not args.dry_run:
-            mark_tool_used(cwd)
+            hook_payload = read_hook_payload(stdin or sys.stdin)
+            hook_cwd = cwd
+            session_id = None
+            turn_id = None
+            if hook_payload is not None:
+                payload_cwd = hook_payload.get("cwd")
+                if isinstance(payload_cwd, str) and payload_cwd:
+                    hook_cwd = Path(payload_cwd)
+                payload_session_id = hook_payload.get("session_id")
+                payload_turn_id = hook_payload.get("turn_id")
+                if isinstance(payload_session_id, str) and payload_session_id:
+                    session_id = payload_session_id
+                if isinstance(payload_turn_id, str) and payload_turn_id:
+                    turn_id = payload_turn_id
+            mark_tool_used(hook_cwd, session_id, turn_id)
         return 0
 
     if args.dry_run:
@@ -219,10 +307,19 @@ def main(argv: list[str] | None = None) -> int:
 
     notification_cwd = cwd
     if args.event == "agent-turn-complete":
-        consumed_marker_cwd = consume_tool_used_marker(cwd)
+        notify_payload = codex_notify_payload(args.codex_notify_args)
+        thread_id = notify_payload.get("thread-id") if notify_payload is not None else None
+        turn_id = notify_payload.get("turn-id") if notify_payload is not None else None
+        if isinstance(thread_id, str) and thread_id and isinstance(turn_id, str) and turn_id:
+            consumed_marker_cwd = consume_turn_used_marker(thread_id, turn_id)
+        else:
+            consumed_marker_cwd = consume_tool_used_marker(cwd)
         if consumed_marker_cwd is None:
             return 0
         notification_cwd = consumed_marker_cwd
+        message = last_assistant_message(notify_payload)
+        if message is None or message_requires_user_input(message):
+            return 0
 
     if args.event == "approval-requested" and not args.human_approval_confirmed:
         return 0

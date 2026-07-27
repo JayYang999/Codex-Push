@@ -16,6 +16,7 @@ from typing import Iterable, TextIO
 SUPPRESSED_FRONTMOST_APPS = {"Codex", "Terminal", "iTerm", "iTerm2", "Warp"}
 SOUND_DIR = Path.home() / ".codex" / "mac-push" / "sounds"
 STATE_DIR = Path.home() / ".codex" / "mac-push" / "state"
+SESSIONS_DIR = Path.home() / ".codex" / "sessions"
 TOOL_USED_MARKER_MAX_AGE_SECONDS = 30 * 60
 EVENT_SOUND_FILES = {
     "agent-turn-complete": "codex_task_complete.mp3",
@@ -37,6 +38,7 @@ EXISTING_NOTIFY = [
     "turn-ended",
 ]
 USER_INPUT_PHRASES = (
+    "只需确认",
     "需要你确认",
     "需要您确认",
     "请确认",
@@ -187,6 +189,13 @@ def last_assistant_message(payload: dict | None) -> str | None:
     return None
 
 
+def user_session_exists(thread_id: str) -> bool:
+    try:
+        return next(SESSIONS_DIR.glob(f"*/*/*/rollout-*-{thread_id}.jsonl"), None) is not None
+    except OSError:
+        return False
+
+
 def message_requires_user_input(message: str) -> bool:
     normalized = " ".join(message.split()).casefold()
     if "?" in normalized or "？" in normalized:
@@ -317,6 +326,8 @@ def main(argv: list[str] | None = None, stdin: TextIO | None = None) -> int:
         if consumed_marker_cwd is None:
             return 0
         notification_cwd = consumed_marker_cwd
+        if not isinstance(thread_id, str) or not thread_id or not user_session_exists(thread_id):
+            return 0
         message = last_assistant_message(notify_payload)
         if message is None or message_requires_user_input(message):
             return 0

@@ -56,6 +56,14 @@ def mark_tool_used_for_turn(
         return module.main(["--event", "tool-used", "--cwd", cwd])
 
 
+def create_user_session(sessions_dir: Path, thread_id: str = "thread-test") -> Path:
+    session_dir = sessions_dir / "2026" / "07" / "27"
+    session_dir.mkdir(parents=True)
+    session_file = session_dir / f"rollout-2026-07-27T10-00-00-{thread_id}.jsonl"
+    session_file.write_text("{}\n")
+    return session_file
+
+
 def load_module():
     spec = importlib.util.spec_from_file_location("codex_mac_push", MODULE_PATH)
     module = importlib.util.module_from_spec(spec)
@@ -184,13 +192,15 @@ class CodexMacPushTest(unittest.TestCase):
     def test_sends_notification_and_plays_matching_sound(self):
         module = load_module()
 
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory() as tmpdir, tempfile.TemporaryDirectory() as sessions_dir:
             with (
                 mock.patch.object(module, "STATE_DIR", Path(tmpdir)),
+                mock.patch.object(module, "SESSIONS_DIR", Path(sessions_dir)),
                 mock.patch.object(module, "frontmost_app_name", return_value="Finder"),
                 mock.patch.object(module, "send_macos_notification") as send,
                 mock.patch.object(module, "play_event_sound") as play_sound,
             ):
+                create_user_session(Path(sessions_dir))
                 mark_tool_used_for_turn(module)
                 exit_code = module.main([
                     "--event",
@@ -280,12 +290,43 @@ C. 两级榜单
         for message in (
             "Which option should I use?",
             "请提供目标目录。",
+            "方案已经确认，你只需确认目标目录后我就开始修改。",
             "I need your input before I continue.",
         ):
             with self.subTest(message=message):
                 self.assertTrue(module.message_requires_user_input(message))
 
         self.assertFalse(module.message_requires_user_input("Implemented the fix and all tests pass."))
+
+    def test_turn_complete_suppresses_internal_thread_without_user_session(self):
+        module = load_module()
+
+        with tempfile.TemporaryDirectory() as state_dir, tempfile.TemporaryDirectory() as sessions_dir:
+            with (
+                mock.patch.object(module, "STATE_DIR", Path(state_dir)),
+                mock.patch.object(module, "SESSIONS_DIR", Path(sessions_dir), create=True),
+                mock.patch.object(module, "frontmost_app_name", return_value="Finder"),
+                mock.patch.object(module, "send_macos_notification") as send,
+                mock.patch.object(module, "play_event_sound") as play_sound,
+            ):
+                mark_tool_used_for_turn(module, "thread-background", "turn-background")
+                marker = module.turn_used_marker_path("thread-background", "turn-background")
+                exit_code = module.main([
+                    "--event",
+                    "agent-turn-complete",
+                    "--cwd",
+                    "/tmp/example-project",
+                    notify_payload(
+                        "Generated personalized suggestions.",
+                        "thread-background",
+                        "turn-background",
+                    ),
+                ])
+
+            self.assertEqual(exit_code, 0)
+            self.assertFalse(marker.exists())
+            send.assert_not_called()
+            play_sound.assert_not_called()
 
     def test_user_input_classifier_detects_question_before_recommendation(self):
         module = load_module()
@@ -304,17 +345,20 @@ C. 两级榜单
     def test_turn_complete_only_consumes_marker_for_matching_turn(self):
         module = load_module()
 
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory() as tmpdir, tempfile.TemporaryDirectory() as sessions_dir:
             with (
                 mock.patch.object(module, "STATE_DIR", Path(tmpdir)),
+                mock.patch.object(module, "SESSIONS_DIR", Path(sessions_dir)),
                 mock.patch.object(module, "frontmost_app_name", return_value="Finder"),
                 mock.patch.object(module, "send_macos_notification") as send,
                 mock.patch.object(module, "play_event_sound") as play_sound,
             ):
+                create_user_session(Path(sessions_dir), "thread-a")
                 mark_tool_used_for_turn(module, "thread-a", "turn-a")
 
             with (
                 mock.patch.object(module, "STATE_DIR", Path(tmpdir)),
+                mock.patch.object(module, "SESSIONS_DIR", Path(sessions_dir)),
                 mock.patch.object(module, "frontmost_app_name", return_value="Finder"),
                 mock.patch.object(module, "send_macos_notification") as send,
                 mock.patch.object(module, "play_event_sound") as play_sound,
@@ -342,9 +386,10 @@ C. 两级榜单
     def test_turn_complete_is_suppressed_when_no_tool_was_used(self):
         module = load_module()
 
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory() as tmpdir, tempfile.TemporaryDirectory() as sessions_dir:
             with (
                 mock.patch.object(module, "STATE_DIR", Path(tmpdir)),
+                mock.patch.object(module, "SESSIONS_DIR", Path(sessions_dir)),
                 mock.patch.object(module, "frontmost_app_name", return_value="Finder"),
                 mock.patch.object(module, "send_macos_notification") as send,
                 mock.patch.object(module, "play_event_sound") as play_sound,
@@ -373,13 +418,15 @@ C. 两级榜单
     def test_turn_complete_consumes_tool_used_marker(self):
         module = load_module()
 
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory() as tmpdir, tempfile.TemporaryDirectory() as sessions_dir:
             with (
                 mock.patch.object(module, "STATE_DIR", Path(tmpdir)),
+                mock.patch.object(module, "SESSIONS_DIR", Path(sessions_dir)),
                 mock.patch.object(module, "frontmost_app_name", return_value="Finder"),
                 mock.patch.object(module, "send_macos_notification") as send,
                 mock.patch.object(module, "play_event_sound") as play_sound,
             ):
+                create_user_session(Path(sessions_dir))
                 mark_tool_used_for_turn(module)
                 module.main([
                     "--event",
@@ -396,13 +443,15 @@ C. 两级榜单
     def test_turn_complete_uses_matching_turn_marker_when_notify_cwd_differs(self):
         module = load_module()
 
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory() as tmpdir, tempfile.TemporaryDirectory() as sessions_dir:
             with (
                 mock.patch.object(module, "STATE_DIR", Path(tmpdir)),
+                mock.patch.object(module, "SESSIONS_DIR", Path(sessions_dir)),
                 mock.patch.object(module, "frontmost_app_name", return_value="Finder"),
                 mock.patch.object(module, "send_macos_notification") as send,
                 mock.patch.object(module, "play_event_sound") as play_sound,
             ):
+                create_user_session(Path(sessions_dir))
                 mark_tool_used_for_turn(module)
                 exit_code = module.main([
                     "--event",
@@ -477,7 +526,7 @@ C. 两级榜单
         send.assert_not_called()
         play_sound.assert_not_called()
 
-    def test_turn_complete_skips_legacy_fallback_marker_and_consumes_valid_marker(self):
+    def test_turn_complete_consumes_fallback_markers_but_suppresses_payload_without_thread(self):
         module = load_module()
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -505,8 +554,7 @@ C. 两级榜单
         self.assertEqual(exit_code, 0)
         self.assertFalse(legacy_marker.exists())
         self.assertFalse(valid_marker.exists())
-        notification = send.call_args.args[0]
-        self.assertEqual(notification.body, "Project: example-project")
+        send.assert_not_called()
 
     def test_play_event_sound_uses_afplay_when_file_exists(self):
         module = load_module()

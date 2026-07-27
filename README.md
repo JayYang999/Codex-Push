@@ -29,9 +29,10 @@ for user input. The classifier uses only Python string matching: it makes no
 model or network call and consumes no additional tokens.
 
 A completion notification requires both a tool-use marker for the same Codex
-turn and a valid notify payload. Markers are keyed by session and turn so
-concurrent tasks cannot consume each other's state. Missing or malformed
-payloads are suppressed to avoid false completion alerts.
+turn, a valid notify payload, and a matching user-visible rollout under
+`~/.codex/sessions`. Markers are keyed by session and turn so concurrent tasks
+cannot consume each other's state. Internal background tasks, plus missing or
+malformed payloads, are suppressed to avoid false completion alerts.
 
 ## Install
 
